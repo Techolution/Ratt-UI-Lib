@@ -1,6 +1,7 @@
 {
-    "name": "@techolution/ratt-lib",
+    "name": "ratt-lib",
     "version": "1.0.0",
+    "description": "Realtime assistant client with audio worklets",
     "type": "module",
     "main": "dist/index.cjs",
     "module": "dist/index.js",
@@ -12,15 +13,25 @@
             "require": "./dist/index.cjs"
         }
     },
+    "files": [
+        "dist",
+        "audio/recorder-worklet.js",
+        "audio/vad-worklet.js"
+    ],
     "scripts": {
         "copy-worklets": "node ./src/scripts/copy-worklets.mjs",
         "build": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap --onSuccess \"npm run copy-worklets\"",
-        "dev": "tsup src/index.ts --format esm,cjs --dts --sourcemap --watch --onSuccess \"npm run copy-worklets\""
+        "dev": "tsup src/index.ts --format esm,cjs --dts --sourcemap --watch --onSuccess \"npm run copy-worklets\"",
+        "prepare": "npm run build"
     },
-    "keywords": [],
-    "author": "",
+    "keywords": [
+        "websocket",
+        "audio",
+        "worklet",
+        "assistant"
+    ],
+    "author": "Techolution",
     "license": "ISC",
-    "description": "",
     "dependencies": {
         "isomorphic-ws": "^5.0.0"
     },
@@ -29,5 +40,8 @@
         "@types/ws": "^8.18.1",
         "tsup": "^8.5.0",
         "typescript": "^5.9.3"
+    },
+    "engines": {
+        "node": ">=18"
     }
 }
