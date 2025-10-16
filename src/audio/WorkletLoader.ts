@@ -160,6 +160,6 @@ registerProcessor('vad-worklet', VADProcessor);
         return audioCtx;
     } catch (err) {
         console.error("[ratt-lib] inline fallback failed:", err);
-        throw new Error("Unable to load audio worklets (all strategies failed).");
+        throw new Error(`Unable to load audio worklets (all strategies failed). Original error: ${err}`);
     }
 }

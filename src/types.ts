@@ -16,9 +16,9 @@ export type AssistantEventName = (typeof AssistantEvent)[keyof typeof AssistantE
 
 export type SocketMessageDetail = {
     raw: MessageEvent;
-    parsed?: any; 
+    parsed?: any;
 };
-  
+
 export type MediaStreamProvider = () => Promise<MediaStream>;
 
 /** Optional overrides for how audio is created/loaded */
@@ -31,7 +31,16 @@ export interface AudioPlumbingOverrides {
     workletLoader?: (basePath: string) => Promise<AudioContext>;
 }
 
-export interface AssistantOptions extends AudioPlumbingOverrides {
+export type ExternalAudioOptions = {
+    /** if true, do not use getUserMedia/AudioContext; caller will push chunks */
+    externalAudio?: boolean;
+    /** derive amplitude from pushed PCM and emit AMPLITUDE events (default: true) */
+    externalAmplitudeRms?: boolean;
+    /** target PCM chunking for send loop; defaults to TARGET_SAMPLES (16000) */
+    pcmChunkSize?: number;
+};
+
+export interface AssistantOptions extends AudioPlumbingOverrides, ExternalAudioOptions {
     url: string;
     onSend?: () => void;
     rattAgentDetails?: Record<string, any>;

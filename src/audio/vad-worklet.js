@@ -32,7 +32,10 @@ class VADProcessor extends AudioWorkletProcessor {
         if (!input || input.length === 0) return true;
 
         // Compute average energy of the frame (this is our “probability” proxy)
-        const energy = input.reduce((acc, val) => acc + val ** 2, 0);
+        let energy = 0;
+        for (let i = 0; i < input.length; i++) {
+          energy += input[i] * input[i];
+        }
 
         if (energy > this.positiveSpeechThreshold) {
             // If energy exceeds the positive threshold, count this frame as speech–positive.

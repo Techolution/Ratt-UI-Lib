@@ -34,12 +34,12 @@ export class AssistantClient extends EventTarget {
     // ws
     private ws: WebSocket | null = null;
     private cleanedUp = false;
-    private reconnectTimer: number | null = null;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private static ACTIVE_WS: WebSocket | null = null;
     private static CONNECT_PROMISE: Promise<WebSocket> | null = null;
 
     // heartbeat
-    private heartbeatInterval: number | null = null;
+    private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
     private missedPongs = 0;
 
     // audio
@@ -50,8 +50,9 @@ export class AssistantClient extends EventTarget {
     private workletsLoaded = false;
 
     // sender
-    private sendInterval: number | null = null;
+    private sendInterval: ReturnType<typeof setInterval> | null = null;
     private rolling = new Float32Array(0);
+    private rollingPCM16 = new Int16Array(0);
     private isRecording = false;
 
     // public-ish mirrors
@@ -70,6 +71,12 @@ export class AssistantClient extends EventTarget {
     private boundOnError?: (e: Event) => void;
     private boundOnClose?: (e: CloseEvent) => void;
     private boundOnMessage?: (e: MessageEvent) => void;
+
+    // which socket our bound handlers are currently attached to
+    private handlerSocket: WebSocket | null = null;
+    // prebuffering / gating
+    private prebuffering = false; // true while we're collecting but not sending
+    private canSendAudio = false; // becomes true after server start_audio
 
     constructor(options: AssistantOptions) {
         super();
@@ -101,6 +108,9 @@ export class AssistantClient extends EventTarget {
                     })),
             audioContextFactory: options.audioContextFactory ?? (() => new AudioContext()),
             workletLoader: options.workletLoader ?? ((base) => ensureAudioContextAndWorklets(base)),
+            externalAudio: options.externalAudio ?? false,
+            externalAmplitudeRms: options.externalAmplitudeRms ?? true,
+            pcmChunkSize: options.pcmChunkSize ?? TARGET_SAMPLES,
         };
 
         // adopt existing socket (StrictMode-safe)
@@ -127,6 +137,58 @@ export class AssistantClient extends EventTarget {
     }
     get transcription() {
         return this._transcription;
+    }
+
+    /** Start capturing mic immediately, buffer locally, do NOT send yet. */
+    public async beginPrebuffering(): Promise<void> {
+        if (this.isRecording) return; // already recording (idempotent)
+        if (!this.workletsLoaded && !this.opts.externalAudio) await this.preloadWorklets();
+
+        this.prebuffering = true;
+        this.canSendAudio = false; // gate closed
+        await this.startRecording(); // start capture, but do NOT create sender yet
+    }
+
+    /** Stop prebuffering and clear any buffered audio. */
+    public stopPrebuffering(): void {
+        this.prebuffering = false;
+        this.canSendAudio = false;
+        this.rolling = new Float32Array(0); // drop buffered audio
+        this.stopRecording();
+    }
+
+    /** Push 16kHz 16-bit mono PCM (LE). Works in any env. */
+    public pushPCM16(chunk: Buffer | Int16Array) {
+        const view = chunk instanceof Int16Array ? chunk : new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
+        // concat into rollingPCM16
+        const merged = new Int16Array(this.rollingPCM16.length + view.length);
+        merged.set(this.rollingPCM16);
+        merged.set(view, this.rollingPCM16.length);
+        this.rollingPCM16 = merged;
+        // optional amplitude from PCM16 (RMS)
+        if (this.opts.externalAmplitudeRms) {
+            let sum = 0;
+            const len = Math.min(view.length, 1024);
+            for (let i = 0; i < len; i++) {
+                const s = view[i] / 32768; // back to [-1,1]
+                sum += s * s;
+            }
+            const rms = Math.sqrt(sum / Math.max(1, len));
+            this.setAmplitude(rms);
+        }
+        // try flush if gate open
+        this.flushBufferedAudio();
+    }
+
+    /** Convenience: push Float32 samples ([-1,1]) and convert to PCM16. */
+    public pushFloat32(chunk: Float32Array) {
+        // convert without allocating twice
+        const pcm = new Int16Array(chunk.length);
+        for (let i = 0; i < chunk.length; i++) {
+            const s = Math.max(-1, Math.min(1, chunk[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        this.pushPCM16(pcm);
     }
 
     /* ---------- connection ---------- */
@@ -203,7 +265,7 @@ export class AssistantClient extends EventTarget {
         if (this.ws?.readyState === WebSocket.CONNECTING) return;
 
         // ensure worklets loaded
-        if (!this.workletsLoaded) {
+        if (!this.workletsLoaded && !this.opts.externalAudio) {
             try {
                 await this.preloadWorklets();
             } catch (error) {
@@ -321,13 +383,16 @@ export class AssistantClient extends EventTarget {
         }
 
         if (data?.start_audio) {
-            if (this.isMsgSended) {
-                this._micConnecting = false;
-                this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+            this.prebuffering = false;
+            this.canSendAudio = true;
+            this._micConnecting = false;
+            this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+            this._micOpen = true;
+            this.emit(AssistantEvent.MIC_OPEN, { open: true });
+            if (!this.isRecording && this.isMsgSended) {
                 this.startRecording().catch(() => {});
-                this._micOpen = true;
-                this.emit(AssistantEvent.MIC_OPEN, { open: true });
             }
+            this.flushBufferedAudio();
             return;
         }
 
@@ -362,38 +427,62 @@ export class AssistantClient extends EventTarget {
     };
 
     private attachSocketHandlers(socket: WebSocket) {
-        if (this.boundOnOpen || this.boundOnMessage || this.boundOnError || this.boundOnClose) return;
+        // already attached to THIS socket
+        if (this.handlerSocket === socket) return;
 
-        this.boundOnOpen = () => {
-            this.startHeartbeat();
-            this._wsReady = true;
-            this.emit(AssistantEvent.READY);
-            this.preloadWorklets().catch((e) => this.emit(AssistantEvent.ERROR, { error: e }));
-        };
-        this.boundOnError = (e) => {
-            this.emit(AssistantEvent.ERROR, { error: e });
-        };
-        this.boundOnClose = () => {
-            this._wsReady = false;
-            this.stopHeartbeat();
-            if (AssistantClient.ACTIVE_WS === socket) AssistantClient.ACTIVE_WS = null;
-            if (!this.cleanedUp) {
-                this.localTeardown();
-                this.reconnectTimer = window.setTimeout(() => {
-                    this.connect().catch(() => {});
-                }, 2000);
-            }
-        };
-        this.boundOnMessage = this.handleWSMessage;
+        // attached to a different socket? detach first
+        if (this.handlerSocket && this.handlerSocket !== socket) {
+            this.detachSocketHandlers();
+        }
 
-        socket.addEventListener("open", this.boundOnOpen);
-        socket.addEventListener("error", this.boundOnError);
-        socket.addEventListener("close", this.boundOnClose);
-        socket.addEventListener("message", this.boundOnMessage);
+        // define bound handlers if not yet created
+        if (!this.boundOnOpen) {
+            this.boundOnOpen = () => {
+                this.startHeartbeat();
+                this._wsReady = true;
+                this.emit(AssistantEvent.READY);
+            };
+        }
+        
+        if (!this.boundOnError) {
+            this.boundOnError = (e) => {
+                this.emit(AssistantEvent.ERROR, { error: e });
+            };
+        }
+        if (!this.boundOnClose) {
+            this.boundOnClose = (event) => {
+                console.warn("[WebSocket] closed", event);
+                this._wsReady = false;
+                this.stopHeartbeat();
+                if (AssistantClient.ACTIVE_WS === socket) AssistantClient.ACTIVE_WS = null;
+                if (!this.cleanedUp) {
+                    // detach from this socket to avoid zombie handlers
+                    this.detachSocketHandlers();
+                    this.localTeardown();
+                    this.reconnectTimer = setTimeout(() => {
+                        this.connect().catch(() => {});
+                    }, 2000);
+                } else {
+                    // we were explicitly torn down; ensure handlers are gone
+                    this.detachSocketHandlers();
+                }
+            };
+        }
+        if (!this.boundOnMessage) {
+            this.boundOnMessage = this.handleWSMessage;
+        }
+
+        // attach
+        socket.addEventListener("open", this.boundOnOpen!);
+        socket.addEventListener("error", this.boundOnError!);
+        socket.addEventListener("close", this.boundOnClose!);
+        socket.addEventListener("message", this.boundOnMessage!);
 
         if (typeof window !== "undefined") {
             window.addEventListener("beforeunload", this.clientDisconnect);
         }
+
+        this.handlerSocket = socket;
     }
 
     private detachSocketHandlers() {
@@ -412,6 +501,16 @@ export class AssistantClient extends EventTarget {
 
     /* ---------- audio ---------- */
     private async startRecording() {
+        if (this.opts.externalAudio) {
+            // external capture: we don't create AudioContext / worklets
+            this.isRecording = true;
+            if (this.sendInterval) {
+                clearInterval(this.sendInterval);
+                this.sendInterval = null;
+            }
+            this.ensureSender();
+            return;
+        }
         try {
             const stream = await this.opts.mediaStreamProvider();
             this.mediaStream = stream;
@@ -443,15 +542,11 @@ export class AssistantClient extends EventTarget {
 
             this.isRecording = true;
 
-            this.sendInterval = window.setInterval(() => {
-                if (!this.isRecording || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-                if (this.rolling.length >= TARGET_SAMPLES) {
-                    const chunk = this.rolling.slice(0, TARGET_SAMPLES);
-                    const pcm = floatTo16BitPCM(chunk);
-                    this.ws.send(pcm.buffer);
-                    this.rolling = this.rolling.slice(TARGET_SAMPLES);
-                }
-            }, 1000);
+            if (this.sendInterval) {
+                clearInterval(this.sendInterval);
+                this.sendInterval = null;
+            }
+            this.ensureSender();
         } catch (err) {
             console.error("Microphone access error:", err);
             this.stopRecording();
@@ -459,10 +554,12 @@ export class AssistantClient extends EventTarget {
     }
 
     private stopRecording() {
-        this.recNode?.disconnect();
-        this.vadNode?.disconnect();
-        if (this.audioCtx && this.audioCtx.state !== "closed") this.audioCtx.suspend();
-        this.mediaStream?.getTracks().forEach((t) => t.stop());
+        if (!this.opts.externalAudio) {
+            this.recNode?.disconnect();
+            this.vadNode?.disconnect();
+            if (this.audioCtx && this.audioCtx.state !== "closed") this.audioCtx.suspend();
+            this.mediaStream?.getTracks().forEach((t) => t.stop());
+        }
         if (this.sendInterval) {
             clearInterval(this.sendInterval);
             this.sendInterval = null;
@@ -470,13 +567,58 @@ export class AssistantClient extends EventTarget {
         this.isRecording = false;
         this._micOpen = false;
         this.emit(AssistantEvent.MIC_OPEN, { open: false });
+        this.prebuffering = false;
+        this.canSendAudio = false;
     }
 
+    private ensureSender() {
+        if (this.sendInterval) return;
+        this.sendInterval = setInterval(() => {
+            if (!this.isRecording || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            if (!this.canSendAudio) return; // gate closed until start_audio
+            // 1) External PCM16 path
+            const pcmChunkSize = this.opts.pcmChunkSize; // typically 16000 samples
+            if (this.rollingPCM16.length >= pcmChunkSize) {
+                const slice = this.rollingPCM16.slice(0, pcmChunkSize);
+                this.ws.send(Buffer.from(slice.buffer, slice.byteOffset, slice.byteLength));
+                this.rollingPCM16 = this.rollingPCM16.slice(pcmChunkSize);
+                return; // send one chunk per tick to keep cadence
+            }
+            // 2) Browser Float32 path (convert -> send)
+            if (this.rolling.length >= TARGET_SAMPLES) {
+                const chunk = this.rolling.slice(0, TARGET_SAMPLES);
+                const pcm = floatTo16BitPCM(chunk);
+                this.ws.send(pcm.buffer);
+                this.rolling = this.rolling.slice(TARGET_SAMPLES);
+                return;
+            }
+        }, 1000);
+    }
+
+    private flushBufferedAudio() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (!this.canSendAudio) return;
+
+        const pcmChunkSize = this.opts.pcmChunkSize;
+        // Flush PCM16 first
+        while (this.rollingPCM16.length >= pcmChunkSize) {
+            const slice = this.rollingPCM16.slice(0, pcmChunkSize);
+            this.ws.send(Buffer.from(slice.buffer, slice.byteOffset, slice.byteLength));
+            this.rollingPCM16 = this.rollingPCM16.slice(pcmChunkSize);
+        }
+        // Then flush float32 buffer if any (browser)
+        while (this.rolling.length >= TARGET_SAMPLES) {
+            const chunk = this.rolling.slice(0, TARGET_SAMPLES);
+            const pcm = floatTo16BitPCM(chunk);
+            this.ws.send(pcm.buffer);
+            this.rolling = this.rolling.slice(TARGET_SAMPLES);
+        }
+    }
     /* ---------- heartbeat ---------- */
     private startHeartbeat() {
         this.stopHeartbeat();
         this.missedPongs = 0;
-        this.heartbeatInterval = window.setInterval(() => {
+        this.heartbeatInterval = setInterval(() => {
             if (this.ws?.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({ heartbeat: true }));
                 this.missedPongs++;
@@ -547,7 +689,7 @@ export class AssistantClient extends EventTarget {
     }
 
     private async preloadWorklets() {
-        if (typeof window !== "undefined" && !this.workletsLoaded) {
+        if (typeof window !== "undefined" && !this.workletsLoaded && !this.opts.externalAudio) {
             this.audioCtx = await this.opts.workletLoader(this.opts.workletBasePath);
             this.workletsLoaded = true;
         }
