@@ -1,0 +1,33 @@
+{
+    "name": "ratt-lib",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "dist/index.cjs",
+    "module": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "scripts": {
+        "copy-worklets": "node ./src/scripts/copy-worklets.mjs",
+        "build": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap --onSuccess \"npm run copy-worklets\"",
+        "dev": "tsup src/index.ts --format esm,cjs --dts --sourcemap --watch --onSuccess \"npm run copy-worklets\""
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "description": "",
+    "dependencies": {
+        "isomorphic-ws": "^5.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^24.7.2",
+        "@types/ws": "^8.18.1",
+        "tsup": "^8.5.0",
+        "typescript": "^5.9.3"
+    }
+}

@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>RATT test</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 16px; }
+      #meter { width: 240px; height: 10px; background:#eee; border-radius:6px; overflow:hidden; }
+      #bar { height:100%; width:0%; background:#5928ed; transition: width .08s linear; }
+      button { margin-right: 8px; }
+      pre { background:#fafafa; border:1px solid #e5e7eb; padding:8px; max-height:220px; overflow:auto; }
+    </style>
+  </head>
+  <body>
+    <div>
+      <button id="connect">Connect</button>
+      <button id="start" disabled>Start session</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+    <div style="margin:12px 0">
+      <div id="meter"><div id="bar"></div></div>
+    </div>
+    <pre id="log"></pre>
+
+    <script type="module">
+      import { AssistantClient } from "/dist/index.js";
+
+      const logEl = document.getElementById("log");
+      const log = (...a) => (logEl.textContent += a.join(" ") + "\n");
+
+      const bar = document.getElementById("bar");
+      const setAmp = (v) => {
+        const clamped = Math.max(0, Math.min(1, Number(v) || 0));
+        bar.style.width = (clamped * 100).toFixed(0) + "%";
+      };
+
+      let client;
+
+      // Connect WS
+      document.getElementById("connect").onclick = async () => {
+        try {
+          client = new AssistantClient({
+            url: "ws://localhost:8080/audioStreamingWebsocket?clientId=Abhay&sessionId=Abhay",
+            requestId: { current: "demo" },
+            rattAgentDetails: { foo: "bar" },
+            showToast: (type, title, detail) => log(`[${type}] ${title}: ${detail}`),
+            workletBasePath: "./dist/",
+          });
+
+          // Events → UI
+          client.on("ready", () => log("websocket ready"));
+          client.on("error", (e) => log("error:", e.detail?.error || e));
+          client.on("amplitude", (e) => setAmp(e.detail.value));
+          client.on("transcription", (e) => log("transcription:", e.detail.text));
+          client.on("mic-connecting", (e) => log("mic connecting:", e.detail?.connecting));
+          client.on("mic-open", (e) => log("mic open:", e.detail?.open));
+
+          await client.connect();
+          document.getElementById("start").disabled = false;
+          document.getElementById("stop").disabled = false;
+        } catch (err) {
+          console.error(err);
+          log("connect error:", err?.message || err);
+        }
+      };
+
+      // Start session (sends details + waits for server `start_audio` to open mic)
+      document.getElementById("start").onclick = async () => {
+        try {
+          // Optional: prime mic permission to improve UX
+          const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+          s.getTracks().forEach(t => t.stop());
+
+          await client.startSession();   // DO NOT also call startMic() unless your server never emits start_audio
+          log("session started (waiting for server start_audio)");
+        } catch (err) {
+          console.error(err);
+          log("start error:", err?.message || err);
+        }
+      };
+
+      // Stop mic + disconnect
+      document.getElementById("stop").onclick = async () => {
+        try {
+          setAmp(0);
+          // client.stopMic();       // stops capture & sends {disconnect}
+          // client.disconnect();    // closes WS & clears timers
+          client.closeSocket();
+          log("stopped + disconnected");
+        } catch (err) {
+          console.error(err);
+          log("stop error:", err?.message || err);
+        }
+      };
+    </script>
+  </body>
+</html>

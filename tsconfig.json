@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "lib": [
+            "ES2020",
+            "DOM"
+        ],
+        "module": "ESNext",
+        "moduleResolution": "Bundler",
+        "declaration": true,
+        "declarationMap": true,
+        "outDir": "dist",
+        "strict": true,
+        "skipLibCheck": true,
+        "esModuleInterop": true
+    },
+    "include": [
+        "src",
+        "dist/vad-worklet.js",
+        "dist/recorder-worklet.js"
+    ]
+}
