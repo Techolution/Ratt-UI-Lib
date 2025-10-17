@@ -2,30 +2,8 @@ import type { AssistantEvents, AssistantOptions, StartMicOptions } from "./types
 import { AssistantEvent, TARGET_SAMPLES } from "./types";
 import { floatTo16BitPCM } from "./audio/floatTo16BitPCM";
 import { ensureAudioContextAndWorklets } from "./audio/WorkletLoader";
-
-/* ---------- helpers ---------- */
-async function createWS(url: string): Promise<WebSocket> {
-    if (typeof WebSocket !== "undefined") return new WebSocket(url);
-    const mod = await import("isomorphic-ws");
-    const WS = (mod.default ?? mod) as unknown as typeof WebSocket;
-    // @ts-expect-error cross-env ctor typing variance
-    return new WS(url) as WebSocket;
-}
-
-function appendWords(push: (full: string, delta?: string) => void, previous: string, next: string) {
-    let current = previous || "";
-    push(current);
-    const words = (next || "").trim().split(/\s+/);
-    let i = 0;
-    const tick = () => {
-        if (i >= words.length) return;
-        const w = words[i++];
-        current = current ? `${current} ${w}` : w;
-        push(current, w);
-        setTimeout(tick, 100);
-    };
-    tick();
-}
+import { createWS } from "./utils/createWS";
+import { appendWords } from "./utils/appendWords";
 
 /* ---------- class ---------- */
 export class AssistantClient extends EventTarget {
@@ -291,9 +269,10 @@ export class AssistantClient extends EventTarget {
 
             try {
                 // ask early for mic (or custom provider may throw)
-                const test = await this.opts.mediaStreamProvider();
-                test.getTracks().forEach((t) => t.stop());
-
+                if (!this.opts.externalAudio) {
+                    const test = await this.opts.mediaStreamProvider();
+                    test.getTracks().forEach((t) => t.stop());
+                }
                 if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
                     await this.connect();
                 }
@@ -443,7 +422,7 @@ export class AssistantClient extends EventTarget {
                 this.emit(AssistantEvent.READY);
             };
         }
-        
+
         if (!this.boundOnError) {
             this.boundOnError = (e) => {
                 this.emit(AssistantEvent.ERROR, { error: e });
