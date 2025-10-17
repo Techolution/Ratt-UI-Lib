@@ -53,12 +53,11 @@ export class AssistantClient extends EventTarget {
     // which socket our bound handlers are currently attached to
     private handlerSocket: WebSocket | null = null;
     // prebuffering / gating
-    private prebuffering = false; // true while we're collecting but not sending
     private canSendAudio = false; // becomes true after server start_audio
 
     constructor(options: AssistantOptions) {
         super();
-
+        const isNode = typeof window === "undefined" || typeof (globalThis as any).document === "undefined";
         // normalize options (no undefined anywhere after this)
         this.opts = {
             url: options.url,
@@ -72,8 +71,10 @@ export class AssistantClient extends EventTarget {
             // injectable providers so lib works in any env (system audio, etc.)
             mediaStreamProvider:
                 options.mediaStreamProvider ??
-                (async () =>
-                    navigator.mediaDevices.getUserMedia({
+                (async () => {
+                    // If someone tries to use it in Node by accident, just throw a clear error
+                    if (isNode) throw new Error("mediaStreamProvider not available in Node. Use externalAudio + pushPCM16().");
+                    return navigator.mediaDevices.getUserMedia({
                         audio: {
                             channelCount: { ideal: 1 },
                             sampleRate: { ideal: 16000 },
@@ -83,10 +84,19 @@ export class AssistantClient extends EventTarget {
                             echoCancellation: { ideal: true },
                         },
                         video: false,
-                    })),
-            audioContextFactory: options.audioContextFactory ?? (() => new AudioContext()),
-            workletLoader: options.workletLoader ?? ((base) => ensureAudioContextAndWorklets(base)),
-            externalAudio: options.externalAudio ?? false,
+                    });
+                }),
+            audioContextFactory:
+                options.audioContextFactory ??
+                // In Node return null; in browser return a real AudioContext when used
+                (() => (isNode ? (null as any) : new AudioContext())),
+            workletLoader:
+                options.workletLoader ??
+                (async (base: string) => {
+                    if (isNode) return null as any;
+                    return ensureAudioContextAndWorklets(base);
+                }),
+            externalAudio: isNode ? options.externalAudio ?? true : options.externalAudio ?? false,
             externalAmplitudeRms: options.externalAmplitudeRms ?? true,
             pcmChunkSize: options.pcmChunkSize ?? TARGET_SAMPLES,
         };
@@ -122,14 +132,12 @@ export class AssistantClient extends EventTarget {
         if (this.isRecording) return; // already recording (idempotent)
         if (!this.workletsLoaded && !this.opts.externalAudio) await this.preloadWorklets();
 
-        this.prebuffering = true;
         this.canSendAudio = false; // gate closed
         await this.startRecording(); // start capture, but do NOT create sender yet
     }
 
     /** Stop prebuffering and clear any buffered audio. */
     public stopPrebuffering(): void {
-        this.prebuffering = false;
         this.canSendAudio = false;
         this.rolling = new Float32Array(0); // drop buffered audio
         this.stopRecording();
@@ -241,7 +249,6 @@ export class AssistantClient extends EventTarget {
     /* ---------- session ---------- */
     async startSession(): Promise<void> {
         if (this.ws?.readyState === WebSocket.CONNECTING) return;
-
         // ensure worklets loaded
         if (!this.workletsLoaded && !this.opts.externalAudio) {
             try {
@@ -266,7 +273,6 @@ export class AssistantClient extends EventTarget {
         if (!this._micOpen) {
             this._micConnecting = true;
             this.emit(AssistantEvent.MIC_CONNECTING, { connecting: true });
-
             try {
                 // ask early for mic (or custom provider may throw)
                 if (!this.opts.externalAudio) {
@@ -290,8 +296,10 @@ export class AssistantClient extends EventTarget {
             } catch (err: any) {
                 this.isMsgSended = false;
                 if (err?.name === "NotAllowedError") {
+                    this.emit(AssistantEvent.ERROR, { error: "Microphone access is blocked. Please enable it in your browser settings." });
                     this.opts.showToast("error", "Mic Disabled", "Microphone access is blocked. Please enable it in your browser settings.");
                 } else {
+                    this.emit(AssistantEvent.ERROR, { err });
                     this.opts.showToast("error", "Error", "Something failed, Please try again.");
                 }
                 this._micConnecting = false;
@@ -362,7 +370,6 @@ export class AssistantClient extends EventTarget {
         }
 
         if (data?.start_audio) {
-            this.prebuffering = false;
             this.canSendAudio = true;
             this._micConnecting = false;
             this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
@@ -546,7 +553,6 @@ export class AssistantClient extends EventTarget {
         this.isRecording = false;
         this._micOpen = false;
         this.emit(AssistantEvent.MIC_OPEN, { open: false });
-        this.prebuffering = false;
         this.canSendAudio = false;
     }
 
