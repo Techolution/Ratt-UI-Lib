@@ -18,6 +18,10 @@
         "audio/recorder-worklet.js",
         "audio/vad-worklet.js"
     ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Techolution/Ratt-UI-Lib.git"
+    },
     "scripts": {
         "copy-worklets": "node ./src/scripts/copy-worklets.mjs",
         "build": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap --onSuccess \"npm run copy-worklets\"",
