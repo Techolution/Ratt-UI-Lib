@@ -440,11 +440,11 @@ export class AssistantClient extends EventTarget {
                 console.warn("[WebSocket] closed", event);
                 this._wsReady = false;
                 this.stopHeartbeat();
+                this.localTeardown();
                 if (AssistantClient.ACTIVE_WS === socket) AssistantClient.ACTIVE_WS = null;
                 if (!this.cleanedUp) {
                     // detach from this socket to avoid zombie handlers
                     this.detachSocketHandlers();
-                    this.localTeardown();
                     this.reconnectTimer = setTimeout(() => {
                         this.connect().catch(() => {});
                     }, 2000);
