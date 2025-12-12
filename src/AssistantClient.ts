@@ -438,6 +438,7 @@ export class AssistantClient extends EventTarget {
         if (!this.boundOnClose) {
             this.boundOnClose = (event) => {
                 console.warn("[WebSocket] closed", event);
+                this.emit(AssistantEvent.ERROR, { error: event });
                 this._wsReady = false;
                 this.stopHeartbeat();
                 this.localTeardown();
