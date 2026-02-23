@@ -36,18 +36,19 @@ export async function createWS(url: string, nodeOptions?: { protocols?: string |
         console.log("[createWS] globalThis.WebSocket exists: <cannot check>");
     }
 
-    // Detect real browser vs Node/Electron host
-    const isBrowser = typeof window !== "undefined" && typeof window.WebSocket !== "undefined" && typeof document !== "undefined";
+    const isReactNative = typeof navigator !== "undefined" && (navigator as any).product === "ReactNative";
 
-    console.log("[createWS] Detected environment:", isBrowser ? "browser" : "node/electron");
+    const hasNativeWS = typeof (globalThis as any).WebSocket !== "undefined";
+
+    const isBrowserLike = hasNativeWS && (typeof document !== "undefined" || isReactNative);
+
+    console.log("[createWS] Detected environment:", isBrowserLike ? "browser" : isReactNative ? "reactNative" : "node/electron");
 
     // ✅ Browser: use native WebSocket
-    if (isBrowser) {
-        console.log("[createWS] Using native browser WebSocket");
-        const Sock = window.WebSocket;
+    if (isBrowserLike) {
+        const Sock = (globalThis as any).WebSocket;
         const ws = nodeOptions?.protocols ? new Sock(url, nodeOptions.protocols as any) : new Sock(url);
-
-        attachDebugHandlers(ws, "browser");
+        attachDebugHandlers(ws, isReactNative ? "react-native" : "browser");
         return ws;
     }
 

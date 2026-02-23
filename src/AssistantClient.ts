@@ -4,9 +4,10 @@ import { floatTo16BitPCM } from "./audio/floatTo16BitPCM";
 import { ensureAudioContextAndWorklets } from "./audio/WorkletLoader";
 import { createWS } from "./utils/createWS";
 import { appendWords } from "./utils/appendWords";
+import { Emitter } from "./utils/Emitter";
 
 /* ---------- class ---------- */
-export class AssistantClient extends EventTarget {
+export class AssistantClient extends Emitter {
     private opts: Required<AssistantOptions>;
 
     // ws
@@ -96,7 +97,7 @@ export class AssistantClient extends EventTarget {
                     if (isNode) return null as any;
                     return ensureAudioContextAndWorklets(base);
                 }),
-            externalAudio: isNode ? options.externalAudio ?? true : options.externalAudio ?? false,
+            externalAudio: isNode ? (options.externalAudio ?? true) : (options.externalAudio ?? false),
             externalAmplitudeRms: options.externalAmplitudeRms ?? true,
             pcmChunkSize: options.pcmChunkSize ?? TARGET_SAMPLES,
         };
@@ -106,7 +107,7 @@ export class AssistantClient extends EventTarget {
             this.ws = AssistantClient.ACTIVE_WS;
             this.attachSocketHandlers(this.ws);
             this._wsReady = true;
-            queueMicrotask(() => this.emit(AssistantEvent.READY));
+            queueMicrotask(() => this.emitEvent(AssistantEvent.READY));
         }
     }
 
@@ -186,13 +187,13 @@ export class AssistantClient extends EventTarget {
 
             if (this.ws.readyState === WebSocket.OPEN) {
                 this._wsReady = true;
-                this.emit(AssistantEvent.READY);
+                this.emitEvent(AssistantEvent.READY);
                 return;
             }
             if (this.ws.readyState === WebSocket.CONNECTING) {
                 await this.waitForOpen(this.ws);
                 this._wsReady = true;
-                this.emit(AssistantEvent.READY);
+                this.emitEvent(AssistantEvent.READY);
                 return;
             }
         }
@@ -203,7 +204,7 @@ export class AssistantClient extends EventTarget {
             this.attachSocketHandlers(this.ws);
             if (this.ws.readyState !== WebSocket.OPEN) await this.waitForOpen(this.ws);
             this._wsReady = true;
-            this.emit(AssistantEvent.READY);
+            this.emitEvent(AssistantEvent.READY);
             return;
         }
 
@@ -219,11 +220,11 @@ export class AssistantClient extends EventTarget {
 
             await this.waitForOpen(socket);
             this._wsReady = true;
-            this.emit(AssistantEvent.READY);
+            this.emitEvent(AssistantEvent.READY);
             try {
                 await this.preloadWorklets();
             } catch (e) {
-                this.emit(AssistantEvent.ERROR, { error: e });
+                this.emitEvent(AssistantEvent.ERROR, { error: e });
             }
             return socket;
         })();
@@ -254,7 +255,7 @@ export class AssistantClient extends EventTarget {
             try {
                 await this.preloadWorklets();
             } catch (error) {
-                this.emit(AssistantEvent.ERROR, { error });
+                this.emitEvent(AssistantEvent.ERROR, { error });
                 this.opts.showToast("error", "Audio Error", "Failed to initialize audio modules. Please reload the page.");
                 return;
             }
@@ -265,14 +266,14 @@ export class AssistantClient extends EventTarget {
             this.ws?.send(JSON.stringify({ disconnect: true }));
             this._micConnecting = false;
             this.isMsgSended = false;
-            this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+            this.emitEvent(AssistantEvent.MIC_CONNECTING, { connecting: false });
             this.stopRecording();
             return;
         }
 
         if (!this._micOpen) {
             this._micConnecting = true;
-            this.emit(AssistantEvent.MIC_CONNECTING, { connecting: true });
+            this.emitEvent(AssistantEvent.MIC_CONNECTING, { connecting: true });
             try {
                 // ask early for mic (or custom provider may throw)
                 if (!this.opts.externalAudio) {
@@ -291,19 +292,19 @@ export class AssistantClient extends EventTarget {
 
                 this.userText = "";
                 this._transcription = "";
-                this.emit(AssistantEvent.TRANSCRIPTION, { text: "" });
+                this.emitEvent(AssistantEvent.TRANSCRIPTION, { text: "" });
                 this.ws?.send(JSON.stringify(details));
             } catch (err: any) {
                 this.isMsgSended = false;
                 if (err?.name === "NotAllowedError") {
-                    this.emit(AssistantEvent.ERROR, { error: "Microphone access is blocked. Please enable it in your browser settings." });
+                    this.emitEvent(AssistantEvent.ERROR, { error: "Microphone access is blocked. Please enable it in your browser settings." });
                     this.opts.showToast("error", "Mic Disabled", "Microphone access is blocked. Please enable it in your browser settings.");
                 } else {
-                    this.emit(AssistantEvent.ERROR, { err });
+                    this.emitEvent(AssistantEvent.ERROR, { err });
                     this.opts.showToast("error", "Error", "Something failed, Please try again.");
                 }
                 this._micConnecting = false;
-                this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+                this.emitEvent(AssistantEvent.MIC_CONNECTING, { connecting: false });
             }
         } else {
             // currently open -> toggle off
@@ -337,9 +338,8 @@ export class AssistantClient extends EventTarget {
     }
 
     /* ---------- DOM-style listener ---------- */
-    on(event: AssistantEvents, handler: (e: any) => void) {
-        this.addEventListener(event, handler as EventListener);
-        return () => this.removeEventListener(event, handler as EventListener);
+    on(event: AssistantEvents, handler: (payload: any) => void) {
+        return super.on(event, handler);
     }
 
     /* ---------- WS handlers ---------- */
@@ -352,7 +352,7 @@ export class AssistantClient extends EventTarget {
                 // still emit raw below; just no parsed
             }
         }
-        this.emit(AssistantEvent.SOCKET_MESSAGE, { raw: evt, parsed });
+        this.emitEvent(AssistantEvent.SOCKET_MESSAGE, { raw: evt, parsed });
 
         const data = parsed;
         if (!data) return;
@@ -365,16 +365,16 @@ export class AssistantClient extends EventTarget {
         if (data?.error) {
             this.localTeardown();
             this.opts.showToast("error", "Error", "Something failed , Please try again.");
-            this.emit(AssistantEvent.ERROR, { error: data.error });
+            this.emitEvent(AssistantEvent.ERROR, { error: data.error });
             return;
         }
 
         if (data?.start_audio) {
             this.canSendAudio = true;
             this._micConnecting = false;
-            this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+            this.emitEvent(AssistantEvent.MIC_CONNECTING, { connecting: false });
             this._micOpen = true;
-            this.emit(AssistantEvent.MIC_OPEN, { open: true });
+            this.emitEvent(AssistantEvent.MIC_OPEN, { open: true });
             if (!this.isRecording && this.isMsgSended) {
                 this.startRecording().catch(() => {});
             }
@@ -387,10 +387,10 @@ export class AssistantClient extends EventTarget {
                 (full, delta) => {
                     this._transcription = full;
                     this.userText = full;
-                    this.emit(AssistantEvent.TRANSCRIPTION, { text: full, delta });
+                    this.emitEvent(AssistantEvent.TRANSCRIPTION, { text: full, delta });
                 },
                 data.streaming_data.previous_transcription,
-                data.streaming_data.new_transcription
+                data.streaming_data.new_transcription,
             );
             return;
         }
@@ -398,7 +398,7 @@ export class AssistantClient extends EventTarget {
         if (data?.transcription && this.isMsgSended) {
             this._transcription = data.transcription;
             this.userText = data.transcription;
-            this.emit(AssistantEvent.TRANSCRIPTION, { text: this._transcription });
+            this.emitEvent(AssistantEvent.TRANSCRIPTION, { text: this._transcription });
         }
 
         if (data?.stop_audio) {
@@ -426,19 +426,19 @@ export class AssistantClient extends EventTarget {
             this.boundOnOpen = () => {
                 this.startHeartbeat();
                 this._wsReady = true;
-                this.emit(AssistantEvent.READY);
+                this.emitEvent(AssistantEvent.READY);
             };
         }
 
         if (!this.boundOnError) {
             this.boundOnError = (e) => {
-                this.emit(AssistantEvent.ERROR, { error: e });
+                this.emitEvent(AssistantEvent.ERROR, { error: e });
             };
         }
         if (!this.boundOnClose) {
             this.boundOnClose = (event) => {
                 console.warn("[WebSocket] closed", event);
-                this.emit(AssistantEvent.ERROR, { error: event });
+                this.emitEvent(AssistantEvent.ERROR, { error: event });
                 this._wsReady = false;
                 this.stopHeartbeat();
                 this.localTeardown();
@@ -553,7 +553,7 @@ export class AssistantClient extends EventTarget {
         }
         this.isRecording = false;
         this._micOpen = false;
-        this.emit(AssistantEvent.MIC_OPEN, { open: false });
+        this.emitEvent(AssistantEvent.MIC_OPEN, { open: false });
         this.canSendAudio = false;
     }
 
@@ -566,7 +566,8 @@ export class AssistantClient extends EventTarget {
             const pcmChunkSize = this.opts.pcmChunkSize; // typically 16000 samples
             if (this.rollingPCM16.length >= pcmChunkSize) {
                 const slice = this.rollingPCM16.slice(0, pcmChunkSize);
-                this.ws.send(Buffer.from(slice.buffer, slice.byteOffset, slice.byteLength));
+                const ab = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+                this.ws.send(ab);
                 this.rollingPCM16 = this.rollingPCM16.slice(pcmChunkSize);
                 return; // send one chunk per tick to keep cadence
             }
@@ -589,7 +590,8 @@ export class AssistantClient extends EventTarget {
         // Flush PCM16 first
         while (this.rollingPCM16.length >= pcmChunkSize) {
             const slice = this.rollingPCM16.slice(0, pcmChunkSize);
-            this.ws.send(Buffer.from(slice.buffer, slice.byteOffset, slice.byteLength));
+            const ab = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+            this.ws.send(ab);
             this.rollingPCM16 = this.rollingPCM16.slice(pcmChunkSize);
         }
         // Then flush float32 buffer if any (browser)
@@ -643,10 +645,10 @@ export class AssistantClient extends EventTarget {
         this.isMsgSended = false;
         this.isRecording = false;
         this._micConnecting = false;
-        this.emit(AssistantEvent.MIC_CONNECTING, { connecting: false });
+        this.emitEvent(AssistantEvent.MIC_CONNECTING, { connecting: false });
         this.stopRecording();
         this._amplitude = 0;
-        this.emit(AssistantEvent.AMPLITUDE, { value: 0 });
+        this.emitEvent(AssistantEvent.AMPLITUDE, { value: 0 });
 
         if (this.sendInterval) {
             clearInterval(this.sendInterval);
@@ -667,11 +669,11 @@ export class AssistantClient extends EventTarget {
 
     private setAmplitude(v: number) {
         this._amplitude = v;
-        this.emit(AssistantEvent.AMPLITUDE, { value: v });
+        this.emitEvent(AssistantEvent.AMPLITUDE, { value: v });
     }
 
-    private emit(type: AssistantEvents, detail?: any) {
-        this.dispatchEvent(new CustomEvent(type, { detail }));
+    private emitEvent(type: AssistantEvents, detail?: any) {
+        super.emit(type, detail);
     }
 
     private async preloadWorklets() {
