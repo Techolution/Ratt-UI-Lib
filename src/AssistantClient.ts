@@ -285,7 +285,8 @@ export class AssistantClient extends Emitter {
                 }
 
                 this.isMsgSended = true;
-                const newReqId = `requestId-${(crypto.randomUUID?.() ?? Date.now()).toString()}`;
+                const uuid = (globalThis as any)?.crypto?.randomUUID?.() ?? `${Date.now()}`;
+                const newReqId = `requestId-${uuid}`;
                 this.opts.requestId.current = newReqId;
 
                 const details = { ...this.opts.rattAgentDetails, requestId: newReqId };

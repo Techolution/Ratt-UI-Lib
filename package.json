@@ -16,10 +16,7 @@
         }
     },
     "files": [
-        "dist",
-        "dist/rn",
-        "audio/recorder-worklet.js",
-        "audio/vad-worklet.js"
+        "dist"
     ],
     "repository": {
         "type": "git",
@@ -27,8 +24,8 @@
     },
     "scripts": {
         "copy-worklets": "node ./src/scripts/copy-worklets.mjs",
-        "build": "tsup src/index.ts src/rn/index.ts --format esm,cjs --dts --clean --sourcemap --onSuccess \"npm run copy-worklets\"",
-        "dev": "tsup src/index.ts src/rn/index.ts --format esm,cjs --dts --sourcemap --watch --onSuccess \"npm run copy-worklets\"",
+        "build": "tsup --onSuccess \"npm run copy-worklets\"",
+        "dev": "tsup --watch --onSuccess \"npm run copy-worklets\"",
         "prepare": "npm run build"
     },
     "keywords": [
